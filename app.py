@@ -1,3 +1,6 @@
+# ==========================================
+# 🎯 2026-06-04 終極無敵懶載入版本 (全面拔除 fuzzy)
+# ==========================================
 from flask import Flask, request, abort
 import os
 import torch
@@ -16,6 +19,7 @@ from linebot.v3.webhook import WebhookParser
 
 app = Flask(__name__)
 
+# 讀取環境變數
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
@@ -26,7 +30,7 @@ parser = WebhookParser(LINE_CHANNEL_SECRET)
 
 MODEL_PATH = "./model"
 
-# 全域變數，初始為 None
+# 全域變數，一開始維持空大腦，避開啟動超時
 tokenizer = None
 model = None
 
@@ -42,42 +46,58 @@ LABEL_MAPPING = {
 }
 
 def load_model_lazy():
-    """動態懶載入模型：第一次觸發訊息時下載並加載大腦"""
+    """動態懶載入大腦：收到訊息才下載並加載"""
     global tokenizer, model
     
+    # 1. 檢查是否早已載入完成
     if tokenizer is not None and model is not None:
         return
 
+    # 2. 如果資料夾不存在，啟動直連下載
     if not os.path.exists(MODEL_PATH):
-        print("🚀 [動態載入] 偵測到本機無模型，開始從 Google Drive 抓取壓縮包...")
+        print("🚀 [核心日誌] 偵測到雲端無模型大腦，啟動 Google Drive 直連下載...")
         DRIVE_ZIP_URL = "https://drive.google.com/file/d/1dL8l2KrWo41l8qOlW9OIG1cl6Nsqj9KJ"
+        
         try:
             zip_path = "./model.zip"
-            # 🌟 已移除 fuzzy=True 參數
-            gdown.download(url=DRIVE_ZIP_URL, output=zip_path, quiet=False)
             
-            print("📦 [動態載入] 下載成功，正在解壓縮...")
-            shutil.unpack_archive(zip_path, MODEL_PATH)
+            # 🔥 物理破除快取鬼魂：拆分參數傳遞，絕對無 fuzzy 參數
+            target_url = str(DRIVE_ZIP_URL)
+            output_file = str(zip_path)
+            gdown.download(target_url, output_file, quiet=False)
             
-            if os.path.exists(zip_path):
-                os.remove(zip_path)
-            print("✅ [動態載入] 模型檔案已解壓至 model 目錄！")
+            print("📦 [核心日誌] 壓縮包下載完畢，開始解壓縮...")
+            shutil.unpack_archive(output_file, MODEL_PATH)
+            
+            # 清理多餘的壓縮檔
+            if os.path.exists(output_file):
+                os.remove(output_file)
+            print("✅ [核心日誌] 雲端大腦物理建置成功！")
+            
         except Exception as e:
-            print(f"❌ 模型下載或解壓失敗: {e}")
-            raise e
+            print(f"❌ [核心日誌] 下載或解壓失敗: {e}")
+            raise RuntimeError(f"雲端大腦下載/解壓失敗，原因: {e}")
 
+    # 3. 確保解壓完成後，正式把 BERT 塞進記憶體
     if tokenizer is None or model is None:
-        print("🧠 正在將 BERT 模型載入至記憶體...")
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-        model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
-        print("🎉 模型成功完全載入！")
+        print("🧠 [核心日誌] 正在將 BERT 模型載入記憶體...")
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+            model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
+            print("🎉 [核心日誌] BERT 大腦成功完全就位！")
+        except Exception as e:
+            print(f"❌ [核心日誌] 模型加載至記憶體失敗: {e}")
+            raise RuntimeError(f"模型載入記憶體失敗，請檢查資料夾結構。原因: {e}")
 
 def predict_bert(text):
+    """BERT 核心預測邏輯"""
     if not text.strip():
         return "無法辨識空文字"
     
+    # 觸發大腦載入機制
     load_model_lazy()
     
+    # 開始進行預測
     inputs = tokenizer(text, padding="max_length", truncation=True, max_length=512, return_tensors="pt")
     with torch.no_grad():
         outputs = model(**inputs)
@@ -89,15 +109,23 @@ def predict_bert(text):
 def callback():
     signature = request.headers.get("X-Line-Signature")
     body = request.get_data(as_text=True)
+    
     try:
         events = parser.parse(body, signature)
     except Exception:
         abort(400)
+        
     for event in events:
         if isinstance(event, MessageEvent):
             user_text = event.message.text
-            result_label = predict_bert(user_text)
-            reply_text = f"【BERT 模型偵測結果】\n這段文字屬於：{result_label}"
+            
+            # 建立多重安全警報機制，哪怕出錯也直接回傳到 LINE 畫面上
+            try:
+                result_label = predict_bert(user_text)
+                reply_text = f"【BERT 模型偵測結果】\n這段文字屬於：{result_label}"
+            except Exception as model_err:
+                reply_text = f"❌ 系統在解析新大腦時發生錯誤：\n{str(model_err)}\n\n(請檢查雲端壓縮包內是否直接包含 config.json 檔案)"
+            
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
@@ -108,7 +136,7 @@ def callback():
 
 @app.route("/", methods=["GET"])
 def index():
-    return "BERT LINE Bot 服務正常運行中！", 200
+    return "BERT LINE Bot 終極懶載入版本正完美運行中！", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
