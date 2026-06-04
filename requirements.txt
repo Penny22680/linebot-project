@@ -3,3 +3,4 @@ line-bot-sdk
 transformers
 gdown
 torch --index-url https://download.pytorch.org/ml/cpu
+sentencepiece
