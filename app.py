@@ -26,7 +26,7 @@ parser = WebhookParser(LINE_CHANNEL_SECRET)
 
 MODEL_PATH = "./model"
 
-# 全域變數，初始為 None
+# 🌟 關鍵：一開始主程式絕對不讀取 MODEL_PATH，避開啟動崩潰！
 tokenizer = None
 model = None
 
@@ -42,13 +42,13 @@ LABEL_MAPPING = {
 }
 
 def load_model_lazy():
-    """動態懶載入模型：第一次觸發訊息時下載並加載大腦"""
+    """動態懶載入：等收到訊息時，才下載並載入模型"""
     global tokenizer, model
     
-    # 如果已經載入過就直接收工
     if tokenizer is not None and model is not None:
         return
 
+    # 如果找不到資料夾，這時候才在背景下載
     if not os.path.exists(MODEL_PATH):
         print("🚀 [動態載入] 偵測到本機無模型，開始從 Google Drive 抓取壓縮包...")
         DRIVE_ZIP_URL = "https://drive.google.com/file/d/1dL8l2KrWo41l8qOlW9OIG1cl6Nsqj9KJ"
@@ -66,7 +66,7 @@ def load_model_lazy():
             print(f"❌ 模型下載或解壓失敗: {e}")
             raise e
 
-    # 修正後的正確載入程式碼
+    # 確保資料夾有東西了，才正式載入
     if tokenizer is None or model is None:
         print("🧠 正在將 BERT 模型載入至記憶體...")
         tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
@@ -77,7 +77,7 @@ def predict_bert(text):
     if not text.strip():
         return "無法辨識空文字"
     
-    # 呼叫動態載入
+    # 觸發下載與載入
     load_model_lazy()
     
     inputs = tokenizer(text, padding="max_length", truncation=True, max_length=512, return_tensors="pt")
@@ -98,10 +98,7 @@ def callback():
     for event in events:
         if isinstance(event, MessageEvent):
             user_text = event.message.text
-            
-            # 開始進行動態預測
             result_label = predict_bert(user_text)
-            
             reply_text = f"【BERT 模型偵測結果】\n這段文字屬於：{result_label}"
             line_bot_api.reply_message(
                 ReplyMessageRequest(
