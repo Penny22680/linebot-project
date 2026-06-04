@@ -1,22 +1,28 @@
-
 from flask import Flask, request, abort
+import os
 
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.v3.webhook import WebhookHandler
+from linebot.v3.messaging import MessagingApi
+from linebot.v3.messaging.configuration import Configuration
+from linebot.v3.messaging import ApiClient
+from linebot.v3.messaging.models import ReplyMessageRequest, TextMessage
+from linebot.v3.webhooks import MessageEvent, TextMessageContent
+from linebot.v3.webhook import WebhookParser
 
 app = Flask(__name__)
 
-# ⚠️ 請之後建議重新產生 token / secret
-LINE_CHANNEL_ACCESS_TOKEN = "WTABxCBcujxYRnghgAE25sholokOVwn9fL1Dj9EmQNYK1Ok6VJn+wENCUHHQaYy0GIP5Nb8HiLADBwYPQWnlZgSQG+GG69CwMV5LNPlfCRNRZZeJzoOGEtDzD25AvdBq5A73cKh04HdNNbiITkwRtQdB04t89/1O/w1cDnyilFU="
-LINE_CHANNEL_SECRET = "d77b9c7e6dd980ecba1694d1a54faa54"
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
-line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
+configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
+api_client = ApiClient(configuration)
+line_bot_api = MessagingApi(api_client)
+
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
+parser = WebhookParser(LINE_CHANNEL_SECRET)
 
-# 🔍 詐騙判斷
 def scam_check(text):
-    keywords = ["凍結", "帳號", "中獎", "點擊", "驗證", "轉帳", "OTP", "密碼"]
+    keywords = ["凍結", "帳號", "中獎", "點擊", "驗證"]
     score = sum(1 for k in keywords if k in text)
 
     if score >= 3:
@@ -24,41 +30,32 @@ def scam_check(text):
     elif score >= 1:
         return "🟠 可疑訊息"
     else:
-        return "🟢 正常訊息"
+        return "🟢 正常"
 
-# LINE webhook
 @app.route("/callback", methods=["POST"])
 def callback():
-    signature = request.headers.get("X-Line-Signature", "")
+    signature = request.headers.get("X-Line-Signature")
     body = request.get_data(as_text=True)
 
-    print("📩 收到訊息：", body)
-
     try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        print("❌ Signature 驗證失敗")
+        events = parser.parse(body, signature)
+    except Exception:
         abort(400)
 
-    return "OK"
+    for event in events:
+        if isinstance(event, MessageEvent):
+            text = event.message.text
+            result = scam_check(text)
 
-# 收訊息
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    user_text = event.message.text
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=f"{result}\n\n你輸入：{text}")]
+                )
+            )
 
-    result = scam_check(user_text)
-
-    reply = f"{result}\n\n你輸入：{user_text}"
-
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text=reply)
-    )
-
-    print("✅ 已回覆：", reply)
-import os
+    return "OK", 200
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5001))
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
