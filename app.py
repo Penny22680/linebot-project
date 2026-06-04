@@ -1,13 +1,14 @@
 from flask import Flask, request, abort
 import os
+import torch
+import shutil
+import gdown
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-from linebot.v3.webhook import WebhookHandler
-from linebot.v3.messaging import MessagingApi
-from linebot.v3.messaging.configuration import Configuration
-from linebot.v3.messaging import ApiClient
+from linebot.v3.messaging import MessagingApi, ApiClient, Configuration
 from linebot.v3.messaging.models import ReplyMessageRequest, TextMessage
-from linebot.v3.webhooks import MessageEvent, TextMessageContent
 from linebot.v3.webhook import WebhookParser
+from linebot.v3.webhooks import MessageEvent
 
 app = Flask(__name__)
 
@@ -17,25 +18,55 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 api_client = ApiClient(configuration)
 line_bot_api = MessagingApi(api_client)
-
-handler = WebhookHandler(LINE_CHANNEL_SECRET)
 parser = WebhookParser(LINE_CHANNEL_SECRET)
 
-def scam_check(text):
-    keywords = ["凍結", "帳號", "中獎", "點擊", "驗證"]
-    score = sum(1 for k in keywords if k in text)
+MODEL_PATH = "./model"
 
-    if score >= 3:
-        return "🔴 高風險詐騙"
-    elif score >= 1:
-        return "🟠 可疑訊息"
-    else:
-        return "🟢 正常"
+tokenizer = None
+model = None
+
+LABEL_MAPPING = {
+    0: "真新聞",
+    1: "假新聞"
+}
+
+def load_model_lazy():
+    global tokenizer, model
+
+    if tokenizer and model:
+        return
+
+    if not os.path.exists(MODEL_PATH):
+        print("下載模型中...")
+
+        FILE_ID = "1dL8l2KrWo41l8qOlW9OIG1cl6Nsqj9KJ"
+        zip_path = "./model.zip"
+
+        gdown.download(id=FILE_ID, output=zip_path, quiet=False)
+        shutil.unpack_archive(zip_path, MODEL_PATH)
+        os.remove(zip_path)
+
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+    model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
+
+def predict(text):
+    if not text.strip():
+        return "空內容"
+
+    load_model_lazy()
+
+    inputs = tokenizer(text, padding=True, truncation=True, max_length=512, return_tensors="pt")
+
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    pred = torch.argmax(outputs.logits, dim=-1).item()
+    return LABEL_MAPPING.get(pred, "未知")
 
 @app.route("/callback", methods=["POST"])
 def callback():
-    signature = request.headers.get("X-Line-Signature")
     body = request.get_data(as_text=True)
+    signature = request.headers.get("X-Line-Signature")
 
     try:
         events = parser.parse(body, signature)
@@ -45,16 +76,26 @@ def callback():
     for event in events:
         if isinstance(event, MessageEvent):
             text = event.message.text
-            result = scam_check(text)
+
+            try:
+                result = predict(text)
+                reply = f"🔍 判斷結果：{result}"
+            except Exception as e:
+                reply = f"錯誤：{str(e)}"
 
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text=f"{result}\n\n你輸入：{text}")]
+                    messages=[TextMessage(text=reply)]
                 )
             )
 
     return "OK", 200
+
+@app.route("/")
+def home():
+    return "LINE Bot Running", 200
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
