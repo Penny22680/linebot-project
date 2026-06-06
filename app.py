@@ -1,9 +1,9 @@
-
 from flask import Flask, request, abort
 import os
 import torch
 import shutil
 import gdown
+import traceback
 
 from transformers import (
     AutoTokenizer,
@@ -43,7 +43,6 @@ parser = WebhookParser(LINE_CHANNEL_SECRET)
 # =========================
 MODEL_PATH = "./model"
 ZIP_PATH = "./model.zip"
-
 FILE_ID = "1dL8l2KrWo41l8qOlW9OIG1cl6Nsqj9KJ"
 
 tokenizer = None
@@ -66,13 +65,37 @@ LABEL_MAPPING = {
 def model_exists():
     return (
         os.path.exists(MODEL_PATH)
-        and os.path.exists(
-            os.path.join(MODEL_PATH, "config.json")
-        )
+        and os.path.exists(os.path.join(MODEL_PATH, "config.json"))
     )
 
 # =========================
-# 懶載入模型
+# 安全下載模型
+# =========================
+def download_model():
+    try:
+        print("🚀 下載模型中...")
+
+        gdown.download(
+            id=FILE_ID,
+            output=ZIP_PATH,
+            quiet=False
+        )
+
+        print("📦 解壓模型...")
+
+        shutil.unpack_archive(ZIP_PATH, MODEL_PATH)
+
+        if os.path.exists(ZIP_PATH):
+            os.remove(ZIP_PATH)
+
+        print("✅ 模型下載完成")
+
+    except Exception as e:
+        print("❌ 模型下載失敗：", str(e))
+        raise
+
+# =========================
+# 載入模型（穩定版）
 # =========================
 def load_model_lazy():
     global tokenizer, model
@@ -81,53 +104,46 @@ def load_model_lazy():
         return
 
     if not model_exists():
+        download_model()
 
-        print("🚀 開始下載模型")
+    print("🧠 載入 tokenizer & model...")
 
-        gdown.download(
-            id=FILE_ID,
-            output=ZIP_PATH,
-            quiet=False
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            MODEL_PATH,
+            use_fast=False,          # ⭐ 關鍵修復
+            local_files_only=True,
+            trust_remote_code=True
         )
 
-        print("📦 開始解壓")
-
-        shutil.unpack_archive(
-            ZIP_PATH,
-            MODEL_PATH
+        model = AutoModelForSequenceClassification.from_pretrained(
+            MODEL_PATH,
+            local_files_only=True,
+            trust_remote_code=True
         )
 
-        if os.path.exists(ZIP_PATH):
-            os.remove(ZIP_PATH)
+        model.eval()
 
-    print("🧠 載入 BERT")
+        print("✅ 模型載入成功")
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        MODEL_PATH,
-        use_fast=False,
-        local_files_only=True
-    )
-
-    model = AutoModelForSequenceClassification.from_pretrained(
-        MODEL_PATH,
-        local_files_only=True
-    )
-
-    print("✅ BERT 載入完成")
+    except Exception as e:
+        print("❌ 模型載入失敗")
+        print(traceback.format_exc())
+        raise
 
 # =========================
 # 預測
 # =========================
 def predict_bert(text):
 
-    if not text.strip():
+    if not text or not text.strip():
         return "無法辨識空文字"
 
     load_model_lazy()
 
     inputs = tokenizer(
         text,
-        padding="max_length",
+        padding=True,
         truncation=True,
         max_length=512,
         return_tensors="pt"
@@ -136,15 +152,9 @@ def predict_bert(text):
     with torch.no_grad():
         outputs = model(**inputs)
 
-    pred = torch.argmax(
-        outputs.logits,
-        dim=-1
-    ).item()
+    pred = torch.argmax(outputs.logits, dim=-1).item()
 
-    return LABEL_MAPPING.get(
-        pred,
-        "其他"
-    )
+    return LABEL_MAPPING.get(pred, "其他")
 
 # =========================
 # LINE Webhook
@@ -152,58 +162,40 @@ def predict_bert(text):
 @app.route("/callback", methods=["POST"])
 def callback():
 
-    signature = request.headers.get(
-        "X-Line-Signature"
-    )
-
-    body = request.get_data(
-        as_text=True
-    )
+    signature = request.headers.get("X-Line-Signature")
+    body = request.get_data(as_text=True)
 
     try:
-        events = parser.parse(
-            body,
-            signature
-        )
-
+        events = parser.parse(body, signature)
     except Exception:
+        print("❌ Webhook parse error")
         abort(400)
 
     for event in events:
 
         if isinstance(event, MessageEvent):
 
-            text = event.message.text
-
             try:
-
+                text = event.message.text
                 result = predict_bert(text)
 
-                reply_text = (
-                    f"🔍 判斷結果：{result}"
-                )
+                reply_text = f"🔍 判斷結果：{result}"
 
             except Exception as e:
-
-                reply_text = (
-                    f"❌ 系統錯誤：\n{str(e)}"
-                )
+                print(traceback.format_exc())
+                reply_text = f"❌ 系統錯誤：\n{str(e)}"
 
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[
-                        TextMessage(
-                            text=reply_text
-                        )
-                    ]
+                    messages=[TextMessage(text=reply_text)]
                 )
             )
 
     return "OK", 200
 
 # =========================
-# Render 健康檢查
+# 健康檢查
 # =========================
 @app.route("/")
 def home():
@@ -214,12 +206,7 @@ def home():
 # =========================
 if __name__ == "__main__":
 
-    port = int(
-        os.environ.get(
-            "PORT",
-            5000
-        )
-    )
+    port = int(os.environ.get("PORT", 5000))
 
     app.run(
         host="0.0.0.0",
