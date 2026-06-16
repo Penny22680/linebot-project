@@ -4,3 +4,4 @@ transformers
 gdown
 torch --index-url https://download.pytorch.org/ml/cpu
 sentencepiece
+python-3.11.9
