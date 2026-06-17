@@ -76,6 +76,25 @@ def download_model():
         print("🚀 下載模型中...")
 
         gdown.download(
+    id=FILE_ID,
+    output=ZIP_PATH,
+    quiet=False
+)downloaded = gdown.download(
+    id=FILE_ID,
+    output=ZIP_PATH,
+    quiet=False,
+    fuzzy=True
+)
+
+if downloaded is None:
+    raise RuntimeError(
+        f"Google Drive 下載失敗，請檢查 FILE_ID: {FILE_ID}"
+    )
+
+if not os.path.exists(ZIP_PATH):
+    raise RuntimeError(
+        f"找不到下載的檔案：{ZIP_PATH}"
+    )gdown.download(
             id=FILE_ID,
             output=ZIP_PATH,
             quiet=False
