@@ -5,42 +5,27 @@ import shutil
 import gdown
 import traceback
 
-from transformers import (
-    AutoTokenizer,
-    AutoModelForSequenceClassification
-)
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-from linebot.v3.messaging import (
-    MessagingApi,
-    ApiClient
-)
+from linebot.v3.messaging import MessagingApi, ApiClient
 from linebot.v3.messaging.configuration import Configuration
-from linebot.v3.messaging.models import (
-    ReplyMessageRequest,
-    TextMessage
-)
-from linebot.v3.webhooks import MessageEvent
+from linebot.v3.messaging.models import ReplyMessageRequest, TextMessage
+from linebot.v3.webhooks import MessageEvent, TextMessageContent
 from linebot.v3.webhook import WebhookParser
 
 app = Flask(__name__)
 
-# =========================
-# LINE 設定
-# =========================
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
-configuration = Configuration(
-    access_token=LINE_CHANNEL_ACCESS_TOKEN
-)
+if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET:
+    raise RuntimeError("LINE_CHANNEL_ACCESS_TOKEN 或 LINE_CHANNEL_SECRET 沒有設定")
 
+configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 api_client = ApiClient(configuration)
 line_bot_api = MessagingApi(api_client)
 parser = WebhookParser(LINE_CHANNEL_SECRET)
 
-# =========================
-# 模型設定
-# =========================
 MODEL_PATH = "./model"
 ZIP_PATH = "./model.zip"
 FILE_ID = "1LJzbFRxYjORxOpxnHwLtj_3L1ZddpeI0"
@@ -59,63 +44,65 @@ LABEL_MAPPING = {
     7: "虛假中獎"
 }
 
-# =========================
-# 檢查模型
-# =========================
+
 def model_exists():
     return (
-        os.path.exists(MODEL_PATH)
+        os.path.isdir(MODEL_PATH)
         and os.path.exists(os.path.join(MODEL_PATH, "config.json"))
+        and (
+            os.path.exists(os.path.join(MODEL_PATH, "model.safetensors"))
+            or os.path.exists(os.path.join(MODEL_PATH, "pytorch_model.bin"))
+        )
     )
 
-# =========================
-# 安全下載模型
-# =========================
+
+def clean_model_files():
+    if os.path.exists(MODEL_PATH):
+        shutil.rmtree(MODEL_PATH)
+
+    if os.path.exists(ZIP_PATH):
+        os.remove(ZIP_PATH)
+
+    os.makedirs(MODEL_PATH, exist_ok=True)
+
+
 def download_model():
-    try:
-        print("🚀 下載模型中...")
+    print("🚀 下載模型中...")
 
-        gdown.download(
-    id=FILE_ID,
-    output=ZIP_PATH,
-    quiet=False
-)downloaded = gdown.download(
-    id=FILE_ID,
-    output=ZIP_PATH,
-    quiet=False,
-    fuzzy=True
-)
+    clean_model_files()
 
-if downloaded is None:
-    raise RuntimeError(
-        f"Google Drive 下載失敗，請檢查 FILE_ID: {FILE_ID}"
+    url = f"https://drive.google.com/uc?id={FILE_ID}"
+
+    downloaded = gdown.download(
+        url=url,
+        output=ZIP_PATH,
+        quiet=False
     )
 
-if not os.path.exists(ZIP_PATH):
-    raise RuntimeError(
-        f"找不到下載的檔案：{ZIP_PATH}"
-    )gdown.download(
-            id=FILE_ID,
-            output=ZIP_PATH,
-            quiet=False
+    if downloaded is None:
+        raise RuntimeError(
+            "Google Drive 下載失敗：請確認 model.zip 權限是「知道連結的任何人都能檢視」，並確認 FILE_ID 正確"
         )
 
-        print("📦 解壓模型...")
+    if not os.path.exists(ZIP_PATH):
+        raise RuntimeError("模型下載失敗：model.zip 沒有成功建立")
 
-        shutil.unpack_archive(ZIP_PATH, MODEL_PATH)
+    print("📦 解壓模型...")
 
-        if os.path.exists(ZIP_PATH):
-            os.remove(ZIP_PATH)
+    shutil.unpack_archive(ZIP_PATH, MODEL_PATH)
 
-        print("✅ 模型下載完成")
+    print("📂 model 目錄內容：", os.listdir(MODEL_PATH))
 
-    except Exception as e:
-        print("❌ 模型下載失敗：", str(e))
-        raise
+    if not os.path.exists(os.path.join(MODEL_PATH, "config.json")):
+        raise RuntimeError(
+            f"模型解壓後找不到 config.json，目前 model 內容：{os.listdir(MODEL_PATH)}"
+        )
 
-# =========================
-# 載入模型（穩定版）
-# =========================
+    os.remove(ZIP_PATH)
+
+    print("✅ 模型下載完成")
+
+
 def load_model_lazy():
     global tokenizer, model
 
@@ -127,34 +114,23 @@ def load_model_lazy():
 
     print("🧠 載入 tokenizer & model...")
 
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(
-            MODEL_PATH,
-            use_fast=False,          # ⭐ 關鍵修復
-            local_files_only=True,
-            trust_remote_code=True
-        )
+    tokenizer = AutoTokenizer.from_pretrained(
+        MODEL_PATH,
+        use_fast=False,
+        local_files_only=True
+    )
 
-        model = AutoModelForSequenceClassification.from_pretrained(
-            MODEL_PATH,
-            local_files_only=True,
-            trust_remote_code=True
-        )
+    model = AutoModelForSequenceClassification.from_pretrained(
+        MODEL_PATH,
+        local_files_only=True
+    )
 
-        model.eval()
+    model.eval()
 
-        print("✅ 模型載入成功")
+    print("✅ 模型載入成功")
 
-    except Exception as e:
-        print("❌ 模型載入失敗")
-        print(traceback.format_exc())
-        raise
 
-# =========================
-# 預測
-# =========================
 def predict_bert(text):
-
     if not text or not text.strip():
         return "無法辨識空文字"
 
@@ -175,12 +151,9 @@ def predict_bert(text):
 
     return LABEL_MAPPING.get(pred, "其他")
 
-# =========================
-# LINE Webhook
-# =========================
+
 @app.route("/callback", methods=["POST"])
 def callback():
-
     signature = request.headers.get("X-Line-Signature")
     body = request.get_data(as_text=True)
 
@@ -188,46 +161,40 @@ def callback():
         events = parser.parse(body, signature)
     except Exception:
         print("❌ Webhook parse error")
+        print(traceback.format_exc())
         abort(400)
 
     for event in events:
-
-        if isinstance(event, MessageEvent):
-
+        if isinstance(event, MessageEvent) and isinstance(event.message, TextMessageContent):
             try:
                 text = event.message.text
                 result = predict_bert(text)
-
                 reply_text = f"🔍 判斷結果：{result}"
 
             except Exception as e:
+                print("❌ 系統錯誤")
                 print(traceback.format_exc())
                 reply_text = f"❌ 系統錯誤：\n{str(e)}"
 
-            line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text=reply_text)]
+            try:
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=reply_text)]
+                    )
                 )
-            )
+            except Exception:
+                print("❌ LINE 回覆失敗")
+                print(traceback.format_exc())
 
     return "OK", 200
 
-# =========================
-# 健康檢查
-# =========================
+
 @app.route("/")
 def home():
     return "LINE Bot Running", 200
 
-# =========================
-# 啟動
-# =========================
+
 if __name__ == "__main__":
-
     port = int(os.environ.get("PORT", 5000))
-
-    app.run(
-        host="0.0.0.0",
-        port=port
-    )
+    app.run(host="0.0.0.0", port=port)
