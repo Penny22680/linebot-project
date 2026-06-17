@@ -116,7 +116,7 @@ def load_model_lazy():
 
     tokenizer = AutoTokenizer.from_pretrained(
         MODEL_PATH,
-        use_fast=False,
+        use_fast=True,
         local_files_only=True
     )
 
