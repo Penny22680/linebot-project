@@ -41,9 +41,9 @@ parser = WebhookParser(LINE_CHANNEL_SECRET)
 # =========================
 # 模型設定
 # =========================
-MODEL_PATH = "./model/bert_model"
+MODEL_PATH = "./model"
 ZIP_PATH = "./model.zip"
-FILE_ID = "1dL8l2KrWo41l8qOlW9OIG1cl6Nsqj9KJ"
+FILE_ID = "1LJzbFRxYjORxOpxnHwLtj_3L1ZddpeI0"
 
 tokenizer = None
 model = None
