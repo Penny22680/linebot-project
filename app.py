@@ -22,7 +22,7 @@ api_client = ApiClient(configuration)
 line_bot_api = MessagingApi(api_client)
 parser = WebhookParser(LINE_CHANNEL_SECRET)
 
-HF_API_URL = "https://penny0922-linebot-bert-api.hf.space/run/predict"
+HF_API_URL = "https://penny0922-linebot-bert-api.hf.space/gradio_api/call/predict"
 
 def predict_bert(text):
     response = requests.post(
