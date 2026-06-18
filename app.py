@@ -1,7 +1,7 @@
 from flask import Flask, request, abort
 import os
 import traceback
-import requests
+from gradio_client import Client
 
 from linebot.v3.messaging import MessagingApi, ApiClient
 from linebot.v3.messaging.configuration import Configuration
@@ -22,17 +22,15 @@ api_client = ApiClient(configuration)
 line_bot_api = MessagingApi(api_client)
 parser = WebhookParser(LINE_CHANNEL_SECRET)
 
-HF_API_URL = "https://penny0922-linebot-bert-api.hf.space/gradio_api/call/predict"
+HF_SPACE_URL = "https://penny0922-linebot-bert-api.hf.space"
+hf_client = Client(HF_SPACE_URL)
 
 def predict_bert(text):
-    response = requests.post(
-        HF_API_URL,
-        json={"data": [text]},
-        timeout=60
+    result = hf_client.predict(
+        text,
+        api_name="/predict"
     )
-    response.raise_for_status()
-    result = response.json()
-    return result["data"][0]
+    return result
 
 @app.route("/callback", methods=["POST"])
 def callback():
