@@ -30,6 +30,14 @@ def predict_bert(text):
         text,
         api_name="/predict"
     )
+
+    print("HF 回傳結果：", result)
+
+    return str(result)def predict_bert(text):
+    result = hf_client.predict(
+        text,
+        api_name="/predict"
+    )
     return result
 
 @app.route("/callback", methods=["POST"])
