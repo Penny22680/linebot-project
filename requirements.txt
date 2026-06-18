@@ -1,7 +1,4 @@
 flask
 line-bot-sdk
-transformers==4.41.2
-torch==2.3.1
-sentencepiece
-gdown
 gunicorn
+requests
