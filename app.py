@@ -2,6 +2,7 @@ import os
 import re
 import time
 import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 from flask import Flask, abort, request
 from gradio_client import Client
@@ -15,6 +16,7 @@ from linebot.v3.messaging import (
     ReplyMessageRequest,
     TextMessage,
 )
+from linebot.v3.messaging.exceptions import ApiException
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 
@@ -38,8 +40,20 @@ logger = logging.getLogger(__name__)
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
-# 這裡改成你目前成功運作的 CPU Basic Space
-HF_SPACE_URL = "https://penny0922-linebot-bert-api.hf.space"
+HF_SPACE_URL = os.getenv(
+    "HF_SPACE_URL",
+    "https://penny0922-linebot-bert-api.hf.space",
+)
+
+MAX_PREDICTION_SECONDS = int(
+    os.getenv("MAX_PREDICTION_SECONDS", "40")
+)
+MIN_TEXT_LENGTH = int(
+    os.getenv("MIN_TEXT_LENGTH", "50")
+)
+MAX_TEXT_LENGTH = int(
+    os.getenv("MAX_TEXT_LENGTH", "3000")
+)
 
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise RuntimeError(
@@ -61,7 +75,6 @@ if not LINE_CHANNEL_SECRET:
 configuration = Configuration(
     access_token=LINE_CHANNEL_ACCESS_TOKEN
 )
-
 handler = WebhookHandler(
     LINE_CHANNEL_SECRET
 )
@@ -71,52 +84,63 @@ handler = WebhookHandler(
 # Hugging Face 呼叫函式
 # =========================================================
 
+def _call_huggingface(text: str) -> str:
+    logger.info("正在建立 Hugging Face Client")
+
+    client = Client(
+        HF_SPACE_URL,
+        verbose=False,
+    )
+
+    logger.info("正在呼叫 Hugging Face /predict")
+
+    result = client.predict(
+        text,
+        api_name="/predict",
+    )
+
+    logger.info("Hugging Face 預測成功")
+    return str(result)
+
+
 def predict_with_huggingface(text: str) -> str:
     """
-    呼叫 Hugging Face Gradio Space。
-
-    不在程式啟動時建立 Client，
-    避免 Hugging Face 暫時休眠或重建時，
-    造成 Render 啟動失敗。
+    呼叫 Hugging Face，並限制最長等待時間。
+    不做多次重試，避免 LINE reply token 因等待太久失效。
     """
 
-    last_error = None
-
-    for attempt in range(1, 4):
-        try:
-            logger.info(
-                "正在呼叫 Hugging Face，第 %s 次嘗試",
-                attempt,
-            )
-
-            client = Client(
-                HF_SPACE_URL,
-                verbose=False,
-            )
-
-            result = client.predict(
-                text,
-                api_name="/predict",
-            )
-
-            logger.info("Hugging Face 預測成功")
-
-            return str(result)
-
-        except Exception as error:
-            last_error = error
-
-            logger.exception(
-                "第 %s 次呼叫 Hugging Face 失敗",
-                attempt,
-            )
-
-            if attempt < 3:
-                time.sleep(attempt * 2)
-
-    raise RuntimeError(
-        f"Hugging Face 呼叫失敗：{last_error}"
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(
+        _call_huggingface,
+        text,
     )
+
+    try:
+        return future.result(
+            timeout=MAX_PREDICTION_SECONDS
+        )
+
+    except FutureTimeoutError as error:
+        future.cancel()
+        logger.error(
+            "Hugging Face 預測超過 %s 秒",
+            MAX_PREDICTION_SECONDS,
+        )
+        raise RuntimeError(
+            f"模型處理超過 {MAX_PREDICTION_SECONDS} 秒"
+        ) from error
+
+    except Exception as error:
+        logger.exception("Hugging Face 呼叫失敗")
+        raise RuntimeError(
+            f"Hugging Face 呼叫失敗：{error}"
+        ) from error
+
+    finally:
+        executor.shutdown(
+            wait=False,
+            cancel_futures=True,
+        )
 
 
 # =========================================================
@@ -124,206 +148,225 @@ def predict_with_huggingface(text: str) -> str:
 # =========================================================
 
 def validate_user_text(text: str) -> str | None:
-    """
-    驗證使用者輸入。
-    回傳 None 代表可以進行模型預測。
-    """
-
     text = text.strip()
 
     if not text:
         return "請輸入想要辨識的文字內容。"
 
-    if len(text) < 50:
-    return (
-        "⚠️ 輸入內容過短，可能影響 AI 判斷準確度。\n\n"
-        "請貼上較完整的新聞或訊息內容，建議至少 50 個字。"
-    )
+    if len(text) < MIN_TEXT_LENGTH:
+        return (
+            "⚠️ 輸入內容過短，可能影響 AI 判斷準確度。\n\n"
+            f"請貼上較完整的新聞或訊息內容，"
+            f"建議至少 {MIN_TEXT_LENGTH} 個字。"
+        )
 
-    if len(text) > 3000:
+    if len(text) > MAX_TEXT_LENGTH:
         return (
             "⚠️ 輸入內容過長。\n\n"
-            "請將文字縮短至 3000 字以內再試一次。"
+            f"請將文字縮短至 {MAX_TEXT_LENGTH} 字以內再試一次。"
         )
 
     return None
 
 
 # =========================================================
-# 統一整理模型回覆
+# 模型結果解析工具
 # =========================================================
 
+def extract_percentage(
+    pattern: str,
+    result: str,
+) -> float | None:
+    match = re.search(
+        pattern,
+        result,
+        flags=re.IGNORECASE,
+    )
+
+    if not match:
+        return None
+
+    try:
+        return float(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
 def format_prediction_result(result: str) -> str:
-    """
-    解析 Hugging Face 回傳結果，
-    根據預測類別與信心度顯示不同風險顏色。
-    """
+    logger.info(
+        "模型原始回傳結果：%s",
+        result,
+    )
 
-    logger.info("模型原始回傳結果：%s", result)
+    result_lower = result.lower()
 
-    # 取得預測類別
     label_match = re.search(
-        r"判斷結果[：:]\s*(詐騙訊息|真實新聞|真實訊息|詐騙|真實)",
+        r"判斷結果[：:]\s*"
+        r"(詐騙訊息|真實新聞|真實訊息|詐騙|真實)",
+        result,
+        flags=re.IGNORECASE,
+    )
+
+    confidence = extract_percentage(
+        r"模型信心度[：:]\s*([0-9]+(?:\.[0-9]+)?)\s*%",
+        result,
+    )
+    scam_probability = extract_percentage(
+        r"詐騙機率[：:]\s*([0-9]+(?:\.[0-9]+)?)\s*%",
+        result,
+    )
+    real_probability = extract_percentage(
+        r"真實機率[：:]\s*([0-9]+(?:\.[0-9]+)?)\s*%",
         result,
     )
 
-    # 取得模型信心度
-    confidence_match = re.search(
-        r"模型信心度[：:]\s*([0-9]+(?:\.[0-9]+)?)%",
-        result,
-    )
-
-    # 取得詐騙機率
-    scam_probability_match = re.search(
-        r"詐騙機率[：:]\s*([0-9]+(?:\.[0-9]+)?)%",
-        result,
-    )
-
-    # 取得真實機率
-    real_probability_match = re.search(
-        r"真實機率[：:]\s*([0-9]+(?:\.[0-9]+)?)%",
-        result,
-    )
-
-    # 如果無法解析類別，就保留原始結果
-    if not label_match:
+    if label_match:
+        label = label_match.group(1)
+    elif "scam" in result_lower:
+        label = "詐騙"
+    elif "real" in result_lower or "true" in result_lower:
+        label = "真實"
+    else:
         return (
             result
             + "\n\nℹ️ 此結果由 AI 模型產生，"
-            "僅供參考，請搭配其他來源查證。"
+            "僅供參考，請搭配其他可靠來源查證。"
         )
 
-    label = label_match.group(1)
+    if confidence is None:
+        if "詐騙" in label and scam_probability is not None:
+            confidence = scam_probability
+        elif "真實" in label and real_probability is not None:
+            confidence = real_probability
+        else:
+            confidence = 0.0
 
-    confidence = (
-        float(confidence_match.group(1))
-        if confidence_match
-        else 0.0
+    probability_lines = []
+
+    if scam_probability is not None:
+        probability_lines.append(
+            f"🚨 詐騙機率：{scam_probability:.2f}%"
+        )
+
+    if real_probability is not None:
+        probability_lines.append(
+            f"✅ 真實機率：{real_probability:.2f}%"
+        )
+
+    probability_text = "\n".join(
+        probability_lines
     )
-
-    scam_probability = (
-        float(scam_probability_match.group(1))
-        if scam_probability_match
-        else None
-    )
-
-    real_probability = (
-        float(real_probability_match.group(1))
-        if real_probability_match
-        else None
-    )
-
-    # =====================================================
-    # 詐騙訊息顯示
-    # =====================================================
 
     if "詐騙" in label:
         if confidence >= 95:
-            title = "🔴【極可能是詐騙】"
-            risk_description = "模型判斷此內容具有極高的詐騙風險。"
-
+            title = "🔴【模型高度傾向詐騙】"
+            description = (
+                "模型對詐騙類別的判斷信心很高，"
+                "請先停止交易並進一步查證。"
+            )
         elif confidence >= 80:
             title = "🟠【高風險訊息】"
-            risk_description = "此內容具有較高的詐騙風險，請提高警覺。"
-
+            description = (
+                "此內容具有較高的詐騙風險，"
+                "請提高警覺並避免立即操作。"
+            )
         elif confidence >= 60:
             title = "🟡【疑似詐騙】"
-            risk_description = "模型判斷結果尚未完全確定，建議進一步查證。"
-
+            description = (
+                "模型偏向詐騙，但判斷仍有不確定性，"
+                "建議透過官方來源查證。"
+            )
         else:
             title = "⚪【判斷信心不足】"
-            risk_description = "模型目前無法明確判斷，請勿只依賴此結果。"
-
-        probability_text = ""
-
-        if scam_probability is not None:
-            probability_text += (
-                f"\n🚨 詐騙機率：{scam_probability:.2f}%"
+            description = (
+                "模型目前無法明確判斷，"
+                "請勿只依賴此結果做出決定。"
             )
 
-        if real_probability is not None:
-            probability_text += (
-                f"\n✅ 真實機率：{real_probability:.2f}%"
-            )
+        sections = [
+            title,
+            f"📊 模型信心度：{confidence:.2f}%",
+        ]
 
-        return (
-            f"{title}\n\n"
-            f"📊 模型信心度：{confidence:.2f}%"
-            f"{probability_text}\n\n"
-            f"🔎 風險說明：\n"
-            f"{risk_description}\n\n"
-            f"⚠️ 防詐提醒：\n"
-            f"• 請勿立即匯款或轉帳\n"
-            f"• 請勿提供銀行帳號或信用卡資料\n"
-            f"• 請勿提供密碼或簡訊驗證碼\n"
-            f"• 請勿點擊不明連結\n"
-            f"• 建議透過官方管道再次查證\n"
-            f"• 必要時撥打 165 反詐騙專線\n\n"
-            f"ℹ️ 此結果僅供輔助判斷，"
-            f"不代表最終事實認定。"
-        )
+        if probability_text:
+            sections.append(probability_text)
 
-    # =====================================================
-    # 真實新聞顯示
-    # =====================================================
+        sections.extend([
+            "🔎 風險說明：\n" + description,
+            (
+                "⚠️ 防詐提醒：\n"
+                "• 請勿立即匯款或轉帳\n"
+                "• 請勿提供銀行帳號或信用卡資料\n"
+                "• 請勿提供密碼或簡訊驗證碼\n"
+                "• 請勿點擊不明連結\n"
+                "• 建議透過官方管道再次查證\n"
+                "• 必要時撥打 165 反詐騙專線"
+            ),
+            (
+                "ℹ️ 此結果僅供輔助判斷，"
+                "不代表最終事實認定。"
+            ),
+        ])
+
+        return "\n\n".join(sections)
 
     if "真實" in label:
         if confidence >= 95:
-            title = "🟢【極可能是真實新聞】"
-            credibility_description = (
-                "模型高度傾向此內容為真實新聞。"
+            title = "🟢【模型高度傾向真實】"
+            description = (
+                "模型高度傾向此內容為真實，"
+                "但仍無法保證內容完全正確。"
             )
-
         elif confidence >= 80:
-            title = "🟢【較可能是真實新聞】"
-            credibility_description = (
-                "模型傾向此內容為真實新聞，仍建議確認來源。"
+            title = "🟢【較可能是真實內容】"
+            description = (
+                "模型傾向此內容為真實，"
+                "仍建議確認消息來源。"
             )
-
         elif confidence >= 60:
-            title = "🟢【可能是真實新聞】"
-            credibility_description = (
-                "模型初步判斷為真實，但信心度有限。"
+            title = "🟡【可能是真實內容】"
+            description = (
+                "模型初步判斷為真實，"
+                "但信心度有限，建議再次查證。"
             )
-
         else:
-            title = "🟡【建議進一步查證】"
-            credibility_description = (
-                "模型信心度不足，無法確定內容是否真實。"
+            title = "⚪【判斷信心不足】"
+            description = (
+                "模型目前無法確定內容是否真實，"
+                "請參考其他可靠來源。"
             )
 
-        probability_text = ""
+        sections = [
+            title,
+            f"📊 模型信心度：{confidence:.2f}%",
+        ]
 
-        if scam_probability is not None:
-            probability_text += (
-                f"\n🚨 詐騙機率：{scam_probability:.2f}%"
-            )
+        if probability_text:
+            sections.append(probability_text)
 
-        if real_probability is not None:
-            probability_text += (
-                f"\n✅ 真實機率：{real_probability:.2f}%"
-            )
+        sections.extend([
+            "🔎 判斷說明：\n" + description,
+            (
+                "✅ 查證建議：\n"
+                "• 確認發布媒體或機構名稱\n"
+                "• 確認文章發布日期\n"
+                "• 搜尋其他媒體是否有相同報導\n"
+                "• 優先參考政府或官方公告"
+            ),
+            (
+                "ℹ️ AI 模型無法保證內容完全真實，"
+                "仍建議透過可靠來源再次查證。"
+            ),
+        ])
 
-        return (
-            f"{title}\n\n"
-            f"📊 模型信心度：{confidence:.2f}%"
-            f"{probability_text}\n\n"
-            f"🔎 判斷說明：\n"
-            f"{credibility_description}\n\n"
-            f"✅ 查證建議：\n"
-            f"• 確認新聞媒體名稱\n"
-            f"• 確認文章發布日期\n"
-            f"• 搜尋其他媒體是否有相同報導\n"
-            f"• 優先參考政府或官方公告\n\n"
-            f"ℹ️ AI 模型無法保證內容完全真實，"
-            f"仍建議透過可靠來源再次查證。"
-        )
+        return "\n\n".join(sections)
 
     return (
         result
         + "\n\nℹ️ 此結果由 AI 模型產生，"
-        "僅供參考，請搭配其他來源查證。"
+        "僅供參考，請搭配其他可靠來源查證。"
     )
+
 
 # =========================================================
 # 首頁與健康檢查
@@ -334,6 +377,9 @@ def home():
     return {
         "status": "ok",
         "service": "LINE BERT scam detection bot",
+        "hf_space": HF_SPACE_URL,
+        "min_text_length": MIN_TEXT_LENGTH,
+        "max_prediction_seconds": MAX_PREDICTION_SECONDS,
     }, 200
 
 
@@ -369,11 +415,15 @@ def callback():
         )
 
     except InvalidSignatureError:
-        logger.warning("LINE Webhook 簽章驗證失敗")
+        logger.warning(
+            "LINE Webhook 簽章驗證失敗"
+        )
         abort(400)
 
     except Exception:
-        logger.exception("處理 LINE Webhook 時發生錯誤")
+        logger.exception(
+            "處理 LINE Webhook 時發生錯誤"
+        )
         abort(500)
 
     return "OK", 200
@@ -422,19 +472,26 @@ def handle_text_message(event):
             )
 
         except Exception as error:
+            elapsed = time.time() - start_time
+
             logger.exception(
-                "模型預測失敗：%s",
+                "模型預測失敗，耗時 %.2f 秒：%s",
+                elapsed,
                 error,
             )
 
             reply_text = (
-                "⚠️ 系統目前正在啟動、更新或忙碌中。\n\n"
+                "⚠️ 模型目前正在啟動、更新或忙碌中。\n\n"
+                "本次等待時間過長，為避免 LINE 回覆逾時，"
+                "已先停止等待。\n\n"
                 "請稍候約 30 秒後，再重新傳送一次。"
             )
 
     try:
         with ApiClient(configuration) as api_client:
-            messaging_api = MessagingApi(api_client)
+            messaging_api = MessagingApi(
+                api_client
+            )
 
             messaging_api.reply_message(
                 ReplyMessageRequest(
@@ -449,8 +506,24 @@ def handle_text_message(event):
 
         logger.info("LINE 回覆成功")
 
+    except ApiException as error:
+        error_text = str(error)
+
+        if "invalid reply token" in error_text.lower():
+            logger.warning(
+                "LINE reply token 已失效或已使用，"
+                "本次無法回覆。請檢查模型處理時間。"
+            )
+        else:
+            logger.exception(
+                "LINE Messaging API 回覆失敗：%s",
+                error,
+            )
+
     except Exception:
-        logger.exception("LINE 回覆失敗")
+        logger.exception(
+            "LINE 回覆失敗"
+        )
 
 
 # =========================================================
