@@ -11,6 +11,9 @@ from linebot.v3.webhook import WebhookParser
 
 app = Flask(__name__)
 
+# =========================
+# LINE 設定
+# =========================
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
@@ -22,24 +25,31 @@ api_client = ApiClient(configuration)
 line_bot_api = MessagingApi(api_client)
 parser = WebhookParser(LINE_CHANNEL_SECRET)
 
-HF_SPACE_URL = "https://penny0922-linebot-bert-api.hf.space"
+# =========================
+# Hugging Face Space
+# =========================
+HF_SPACE_URL = "https://penny0922-linebot-bert-binary-api.hf.space"
 hf_client = Client(HF_SPACE_URL)
 
+
 def predict_bert(text):
+    """
+    呼叫 Hugging Face Space
+    """
     result = hf_client.predict(
         text,
         api_name="/predict"
     )
 
-    print("HF 回傳結果：", result)
+    print("HF 回傳結果：")
+    print(result)
 
-    return str(result)def predict_bert(text):
-    result = hf_client.predict(
-        text,
-        api_name="/predict"
-    )
-    return result
+    return str(result)
 
+
+# =========================
+# LINE Webhook
+# =========================
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature")
@@ -48,37 +58,44 @@ def callback():
     try:
         events = parser.parse(body, signature)
     except Exception:
-        print("❌ Webhook parse error")
+        print("Webhook Parse Error")
         print(traceback.format_exc())
         abort(400)
 
     for event in events:
+
         if isinstance(event, MessageEvent) and isinstance(event.message, TextMessageContent):
+
+            user_text = event.message.text
+
             try:
-                text = event.message.text
-                result = predict_bert(text)
-                reply_text = f"🔍 判斷結果：{result}"
+                reply_text = predict_bert(user_text)
+
             except Exception as e:
-                print("❌ 系統錯誤")
                 print(traceback.format_exc())
-                reply_text = f"❌ 系統錯誤：\n{str(e)}"
+                reply_text = f"❌ 系統錯誤\n{str(e)}"
 
             try:
                 line_bot_api.reply_message(
                     ReplyMessageRequest(
                         reply_token=event.reply_token,
-                        messages=[TextMessage(text=reply_text)]
+                        messages=[
+                            TextMessage(text=reply_text)
+                        ]
                     )
                 )
+
             except Exception:
-                print("❌ LINE 回覆失敗")
+                print("LINE Reply Error")
                 print(traceback.format_exc())
 
     return "OK", 200
 
+
 @app.route("/")
 def home():
-    return "LINE Bot Running", 200
+    return "LINE Bot Running!", 200
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
