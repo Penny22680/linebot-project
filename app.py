@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import logging
 
@@ -154,38 +155,175 @@ def validate_user_text(text: str) -> str | None:
 
 def format_prediction_result(result: str) -> str:
     """
-    在模型結果下方加入提醒文字。
+    解析 Hugging Face 回傳結果，
+    根據預測類別與信心度顯示不同風險顏色。
     """
 
-    result_lower = result.lower()
+    logger.info("模型原始回傳結果：%s", result)
 
-    if "詐騙" in result:
-        warning = (
-            "\n\n⚠️ 此結果僅供輔助判斷。"
-            "請勿因模型結果直接匯款、提供驗證碼、"
-            "帳戶資料或個人資料。"
-        )
+    # 取得預測類別
+    label_match = re.search(
+        r"判斷結果[：:]\s*(詐騙訊息|真實新聞|真實訊息|詐騙|真實)",
+        result,
+    )
 
-    elif "真實" in result:
-        warning = (
-            "\n\nℹ️ 模型無法保證內容完全真實，"
-            "仍建議確認新聞來源、發布日期與官方公告。"
-        )
+    # 取得模型信心度
+    confidence_match = re.search(
+        r"模型信心度[：:]\s*([0-9]+(?:\.[0-9]+)?)%",
+        result,
+    )
 
-    elif "scam" in result_lower:
-        warning = (
-            "\n\n⚠️ 此結果僅供輔助判斷，"
-            "請勿直接匯款或提供個人資料。"
-        )
+    # 取得詐騙機率
+    scam_probability_match = re.search(
+        r"詐騙機率[：:]\s*([0-9]+(?:\.[0-9]+)?)%",
+        result,
+    )
 
-    else:
-        warning = (
-            "\n\nℹ️ 此結果由 AI 模型產生，"
+    # 取得真實機率
+    real_probability_match = re.search(
+        r"真實機率[：:]\s*([0-9]+(?:\.[0-9]+)?)%",
+        result,
+    )
+
+    # 如果無法解析類別，就保留原始結果
+    if not label_match:
+        return (
+            result
+            + "\n\nℹ️ 此結果由 AI 模型產生，"
             "僅供參考，請搭配其他來源查證。"
         )
 
-    return result + warning
+    label = label_match.group(1)
 
+    confidence = (
+        float(confidence_match.group(1))
+        if confidence_match
+        else 0.0
+    )
+
+    scam_probability = (
+        float(scam_probability_match.group(1))
+        if scam_probability_match
+        else None
+    )
+
+    real_probability = (
+        float(real_probability_match.group(1))
+        if real_probability_match
+        else None
+    )
+
+    # =====================================================
+    # 詐騙訊息顯示
+    # =====================================================
+
+    if "詐騙" in label:
+        if confidence >= 95:
+            title = "🔴【極可能是詐騙】"
+            risk_description = "模型判斷此內容具有極高的詐騙風險。"
+
+        elif confidence >= 80:
+            title = "🟠【高風險訊息】"
+            risk_description = "此內容具有較高的詐騙風險，請提高警覺。"
+
+        elif confidence >= 60:
+            title = "🟡【疑似詐騙】"
+            risk_description = "模型判斷結果尚未完全確定，建議進一步查證。"
+
+        else:
+            title = "⚪【判斷信心不足】"
+            risk_description = "模型目前無法明確判斷，請勿只依賴此結果。"
+
+        probability_text = ""
+
+        if scam_probability is not None:
+            probability_text += (
+                f"\n🚨 詐騙機率：{scam_probability:.2f}%"
+            )
+
+        if real_probability is not None:
+            probability_text += (
+                f"\n✅ 真實機率：{real_probability:.2f}%"
+            )
+
+        return (
+            f"{title}\n\n"
+            f"📊 模型信心度：{confidence:.2f}%"
+            f"{probability_text}\n\n"
+            f"🔎 風險說明：\n"
+            f"{risk_description}\n\n"
+            f"⚠️ 防詐提醒：\n"
+            f"• 請勿立即匯款或轉帳\n"
+            f"• 請勿提供銀行帳號或信用卡資料\n"
+            f"• 請勿提供密碼或簡訊驗證碼\n"
+            f"• 請勿點擊不明連結\n"
+            f"• 建議透過官方管道再次查證\n"
+            f"• 必要時撥打 165 反詐騙專線\n\n"
+            f"ℹ️ 此結果僅供輔助判斷，"
+            f"不代表最終事實認定。"
+        )
+
+    # =====================================================
+    # 真實新聞顯示
+    # =====================================================
+
+    if "真實" in label:
+        if confidence >= 95:
+            title = "🟢【極可能是真實新聞】"
+            credibility_description = (
+                "模型高度傾向此內容為真實新聞。"
+            )
+
+        elif confidence >= 80:
+            title = "🟢【較可能是真實新聞】"
+            credibility_description = (
+                "模型傾向此內容為真實新聞，仍建議確認來源。"
+            )
+
+        elif confidence >= 60:
+            title = "🟢【可能是真實新聞】"
+            credibility_description = (
+                "模型初步判斷為真實，但信心度有限。"
+            )
+
+        else:
+            title = "🟡【建議進一步查證】"
+            credibility_description = (
+                "模型信心度不足，無法確定內容是否真實。"
+            )
+
+        probability_text = ""
+
+        if scam_probability is not None:
+            probability_text += (
+                f"\n🚨 詐騙機率：{scam_probability:.2f}%"
+            )
+
+        if real_probability is not None:
+            probability_text += (
+                f"\n✅ 真實機率：{real_probability:.2f}%"
+            )
+
+        return (
+            f"{title}\n\n"
+            f"📊 模型信心度：{confidence:.2f}%"
+            f"{probability_text}\n\n"
+            f"🔎 判斷說明：\n"
+            f"{credibility_description}\n\n"
+            f"✅ 查證建議：\n"
+            f"• 確認新聞媒體名稱\n"
+            f"• 確認文章發布日期\n"
+            f"• 搜尋其他媒體是否有相同報導\n"
+            f"• 優先參考政府或官方公告\n\n"
+            f"ℹ️ AI 模型無法保證內容完全真實，"
+            f"仍建議透過可靠來源再次查證。"
+        )
+
+    return (
+        result
+        + "\n\nℹ️ 此結果由 AI 模型產生，"
+        "僅供參考，請搭配其他來源查證。"
+    )
 
 # =========================================================
 # 首頁與健康檢查
