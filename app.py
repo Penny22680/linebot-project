@@ -28,7 +28,7 @@ parser = WebhookParser(LINE_CHANNEL_SECRET)
 # =========================
 # Hugging Face Space
 # =========================
-HF_SPACE_URL = "https://penny0922-linebot-bert-binary-api.hf.space"
+HF_SPACE_URL = "https://penny0922-linebot-bert-api.hf.space"
 hf_client = Client(HF_SPACE_URL)
 
 
