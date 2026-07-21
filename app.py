@@ -30,6 +30,16 @@ parser = WebhookParser(LINE_CHANNEL_SECRET)
 # =========================
 HF_SPACE_URL = "https://penny0922-linebot-bert-api.hf.space"
 hf_client = Client(HF_SPACE_URL)
+import time
+from gradio_client import Client
+
+def get_hf_client():
+    for i in range(3):
+        try:
+            return Client(HF_SPACE_URL)
+        except Exception:
+            time.sleep(2)
+    raise Exception("無法連線到 Hugging Face")
 
 
 def predict_bert(text):
