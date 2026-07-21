@@ -46,10 +46,12 @@ def predict_bert(text):
     """
     呼叫 Hugging Face Space
     """
-    result = hf_client.predict(
-        text,
-        api_name="/predict"
-    )
+   client = get_hf_client()
+
+result = client.predict(
+    user_message,
+    api_name="/predict"
+)
 
     print("HF 回傳結果：")
     print(result)
