@@ -134,11 +134,11 @@ def validate_user_text(text: str) -> str | None:
     if not text:
         return "請輸入想要辨識的文字內容。"
 
-    if len(text) < 20:
-        return (
-            "⚠️ 目前輸入內容太短，可能影響判斷準確度。\n\n"
-            "請貼上較完整的訊息或新聞內容，建議至少 20 個字。"
-        )
+    if len(text) < 50:
+    return (
+        "⚠️ 輸入內容過短，可能影響 AI 判斷準確度。\n\n"
+        "請貼上較完整的新聞或訊息內容，建議至少 50 個字。"
+    )
 
     if len(text) > 3000:
         return (
