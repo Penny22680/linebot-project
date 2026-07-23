@@ -1,5 +1,7 @@
 import os
 import re
+import os
+import re
 import time
 import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
@@ -78,6 +80,189 @@ configuration = Configuration(
 handler = WebhookHandler(
     LINE_CHANNEL_SECRET
 )
+
+
+
+# =========================================================
+# 詐騙特徵字典（可解釋功能）
+# =========================================================
+
+SCAM_FEATURES = {
+    "投資詐騙": {
+        "keywords": [
+            "保證獲利", "保證賺錢", "穩賺不賠", "穩賺", "高報酬",
+            "高收益", "零風險", "低風險高報酬", "內線消息", "內幕消息",
+            "老師帶單", "老師報牌", "代操", "飆股", "明牌",
+            "投資群組", "股票群組", "虛擬貨幣投資", "加密貨幣投資",
+            "穩定獲利", "每天獲利", "快速翻倍", "本金翻倍",
+        ],
+        "patterns": [
+            ("加入", "投資群"), ("加入", "股票群"), ("加LINE", "投資"),
+            ("加賴", "投資"), ("入金", "獲利"), ("儲值", "投資"),
+            ("匯款", "代操"),
+        ],
+    },
+    "金融與帳戶詐騙": {
+        "keywords": [
+            "解除分期", "重複扣款", "誤設分期", "取消分期",
+            "監管帳戶", "安全帳戶", "帳戶凍結", "帳戶異常",
+            "帳戶解凍", "提款機操作", "ATM操作", "網路銀行操作",
+            "提供驗證碼", "簡訊驗證碼", "OTP驗證碼", "銀行密碼",
+            "網銀密碼", "信用卡卡號", "信用卡背面末三碼",
+        ],
+        "patterns": [
+            ("ATM", "解除"), ("ATM", "取消"), ("轉帳", "驗證"),
+            ("匯款", "帳戶"), ("銀行", "驗證碼"), ("客服", "分期"),
+        ],
+    },
+    "假冒政府或司法機關": {
+        "keywords": [
+            "涉及洗錢", "涉嫌洗錢", "涉及刑案", "涉嫌刑案",
+            "偵查不公開", "法院傳票", "檢察官指示", "檢警辦案",
+            "地檢署通知", "警察局通知", "健保卡遭冒用",
+            "身分遭冒用", "配合調查", "不得告知家人",
+        ],
+        "patterns": [
+            ("警察", "匯款"), ("檢察官", "匯款"), ("法院", "轉帳"),
+            ("地檢署", "帳戶"), ("涉案", "監管"),
+        ],
+    },
+    "中獎與獎金詐騙": {
+        "keywords": [
+            "恭喜中獎", "幸運得主", "領取獎金", "領取獎品",
+            "中獎通知", "兌獎期限", "領獎手續費",
+            "稅金後領獎", "先繳稅金", "保證金後領取",
+        ],
+        "patterns": [
+            ("中獎", "手續費"), ("中獎", "匯款"),
+            ("領獎", "稅金"), ("獎金", "帳戶"),
+        ],
+    },
+    "網路購物詐騙": {
+        "keywords": [
+            "私下交易", "跳過平台", "離開平台交易",
+            "先匯款後出貨", "匯款後出貨", "保留商品請先付款",
+            "訂金保留", "客服要求操作ATM", "賣場認證",
+            "買家認證", "金流認證",
+        ],
+        "patterns": [
+            ("匯款", "出貨"), ("訂金", "保留"), ("客服", "ATM"),
+            ("賣場", "驗證"), ("買家", "驗證"),
+        ],
+    },
+    "愛情與交友詐騙": {
+        "keywords": [
+            "跨國軍官", "海外軍官", "戰地軍官", "聯合國醫生",
+            "海外醫生", "海外工程師", "包裹卡海關",
+            "見面需要費用", "急需借錢", "幫忙匯款",
+            "代收包裹", "愛你但需要錢", "未見面先借錢",
+        ],
+        "patterns": [
+            ("交友", "借錢"), ("愛你", "匯款"), ("見面", "機票"),
+            ("包裹", "手續費"), ("海關", "費用"), ("軍官", "匯款"),
+        ],
+    },
+    "釣魚連結與個資詐騙": {
+        "keywords": [
+            "點擊連結驗證", "立即點擊連結", "登入驗證帳戶",
+            "帳號即將停用", "帳號即將封鎖", "更新個人資料",
+            "填寫銀行資料", "提供身分證字號", "提供信用卡資料",
+            "重新認證帳號",
+        ],
+        "patterns": [
+            ("點擊", "驗證"), ("連結", "登入"), ("帳號", "停用"),
+            ("帳戶", "認證"), ("填寫", "信用卡"),
+        ],
+    },
+    "急迫與施壓話術": {
+        "keywords": [
+            "立即處理", "限時處理", "最後通知", "逾期失效",
+            "今天截止", "馬上匯款", "立刻轉帳", "不得告知他人",
+            "不要告訴家人", "保持通話", "不要掛電話",
+        ],
+        "patterns": [
+            ("立即", "匯款"), ("立刻", "轉帳"), ("限時", "付款"),
+            ("最後", "機會"), ("不要", "報警"),
+        ],
+    },
+}
+
+
+def normalize_for_matching(text: str) -> str:
+    """統一大小寫、空白與 LINE 常見寫法，方便關鍵字比對。"""
+    normalized = text.lower()
+    normalized = re.sub(r"\s+", "", normalized)
+    normalized = normalized.replace("line群組", "line群")
+    normalized = normalized.replace("line群组", "line群")
+    normalized = normalized.replace("加入line", "加line")
+    normalized = normalized.replace("加line好友", "加line")
+    return normalized
+
+
+def analyze_scam_features(text: str) -> list[dict]:
+    """找出文字命中的詐騙類型與關鍵字。"""
+    normalized_text = normalize_for_matching(text)
+    findings = []
+
+    for category, rules in SCAM_FEATURES.items():
+        matched_items = []
+
+        for keyword in rules.get("keywords", []):
+            if normalize_for_matching(keyword) in normalized_text:
+                matched_items.append(keyword)
+
+        for pattern_words in rules.get("patterns", []):
+            normalized_words = [
+                normalize_for_matching(word)
+                for word in pattern_words
+            ]
+            if all(word in normalized_text for word in normalized_words):
+                matched_items.append("＋".join(pattern_words))
+
+        unique_items = list(dict.fromkeys(matched_items))
+
+        if unique_items:
+            findings.append({
+                "category": category,
+                "matches": unique_items,
+            })
+
+    findings.sort(
+        key=lambda item: len(item["matches"]),
+        reverse=True,
+    )
+    return findings
+
+
+def build_explanation_text(
+    user_text: str,
+    max_categories: int = 3,
+    max_matches_per_category: int = 4,
+) -> str:
+    """產生給 LINE 使用者看的判斷依據。"""
+    findings = analyze_scam_features(user_text)
+
+    if not findings:
+        return (
+            "未偵測到明確的規則型詐騙關鍵字。\n"
+            "本次結果主要來自模型對整段文字語意的判斷，"
+            "建議仍透過官方來源查證。"
+        )
+
+    lines = []
+
+    for finding in findings[:max_categories]:
+        matches = finding["matches"][:max_matches_per_category]
+        match_text = "、".join(f"「{item}」" for item in matches)
+        lines.append(
+            f"• {finding['category']}：偵測到 {match_text}"
+        )
+
+    lines.append(
+        "\n以上是系統偵測到的常見風險特徵，"
+        "用來輔助說明判斷結果。"
+    )
+    return "\n".join(lines)
 
 
 # =========================================================
@@ -192,7 +377,10 @@ def extract_percentage(
         return None
 
 
-def format_prediction_result(result: str) -> str:
+def format_prediction_result(
+    result: str,
+    user_text: str,
+) -> str:
     logger.info(
         "模型原始回傳結果：%s",
         result,
@@ -291,8 +479,13 @@ def format_prediction_result(result: str) -> str:
         if probability_text:
             sections.append(probability_text)
 
+        explanation_text = build_explanation_text(
+            user_text
+        )
+
         sections.extend([
             "🔎 風險說明：\n" + description,
+            "🧩 判斷依據：\n" + explanation_text,
             (
                 "⚠️ 防詐提醒：\n"
                 "• 請勿立即匯款或轉帳\n"
@@ -380,6 +573,7 @@ def home():
         "hf_space": HF_SPACE_URL,
         "min_text_length": MIN_TEXT_LENGTH,
         "max_prediction_seconds": MAX_PREDICTION_SECONDS,
+        "explainable_rules": True,
     }, 200
 
 
@@ -461,7 +655,8 @@ def handle_text_message(event):
             )
 
             reply_text = format_prediction_result(
-                model_result
+                model_result,
+                user_text,
             )
 
             elapsed = time.time() - start_time
