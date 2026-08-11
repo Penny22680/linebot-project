@@ -3,3 +3,8 @@ line-bot-sdk
 gunicorn
 requests
 gradio_client
+pandas
+scikit-learn
+joblib
+beautifulsoup4
+python-whois
