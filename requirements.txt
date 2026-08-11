@@ -8,3 +8,5 @@ scikit-learn
 joblib
 beautifulsoup4
 python-whois
+shap
+numpy
