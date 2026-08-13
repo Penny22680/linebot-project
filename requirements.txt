@@ -4,7 +4,7 @@ gunicorn
 requests
 gradio_client
 pandas
-scikit-learn
+scikit-learn==1.6.1
 joblib
 beautifulsoup4
 python-whois
