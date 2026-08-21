@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: line-scam-phishing-bot-v3
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 300
+    healthCheckPath: /health
+    envVars:
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false
+      - key: LINE_CHANNEL_SECRET
+        sync: false
+      - key: HF_SPACE_URL
+        value: https://penny0922-linebot-bert-v3.hf.space
+      - key: MAX_PREDICTION_SECONDS
+        value: "60"
+      - key: MIN_TEXT_LENGTH
+        value: "10"
+      - key: MAX_TEXT_LENGTH
+        value: "3000"
