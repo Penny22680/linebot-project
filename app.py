@@ -109,7 +109,7 @@ handler = WebhookHandler(
 
 
 # =========================================================
-# 4. URL 判斷與網址預測
+# 4. URL 擷取
 # =========================================================
 
 URL_PATTERN = re.compile(
@@ -139,29 +139,236 @@ def extract_url(
 
     url = match.group(0)
 
-    # 移除句尾常見標點，
-    # 避免「網址。」「網址）」一起送進模型
+    # 移除網址句尾常見標點
     return url.rstrip(
         ".,!?;:，。！？；：)]}>'\""
     )
 
 
-def get_risk_level(
-    score: float,
+# =========================================================
+# 5. 網址判斷文字格式
+# =========================================================
+
+def build_normal_url_reply(
+    result: dict,
 ) -> str:
-    if score >= 80:
-        return "極高風險"
+    """
+    正常網址：
+    不顯示風險分數，
+    改顯示注意程度。
+    """
 
-    if score >= 60:
-        return "高風險"
+    risk_score = float(
+        result.get(
+            "final_risk_score",
+            0.0,
+        )
+    )
 
-    if score >= 40:
-        return "中度風險"
+    feature_dict = result.get(
+        "structure_features",
+        {},
+    )
 
-    if score >= 20:
-        return "低度風險"
+    trusted_homepage = bool(
+        result.get(
+            "trusted_homepage",
+            False,
+        )
+    )
 
-    return "極低風險"
+    has_sensitive_keyword = int(
+        feature_dict.get(
+            "has_sensitive_keyword",
+            0,
+        )
+    )
+
+    has_ip = int(
+        feature_dict.get(
+            "has_ip",
+            0,
+        )
+    )
+
+    suspicious_tld = int(
+        feature_dict.get(
+            "suspicious_tld",
+            0,
+        )
+    )
+
+    if trusted_homepage and risk_score <= 10:
+        attention_icon = "🟢"
+        attention_level = "低"
+        explanation = (
+            "官方網站，未發現明顯異常特徵。"
+        )
+
+    elif (
+        has_sensitive_keyword == 1
+        or risk_score >= 30
+    ):
+        attention_icon = "🟡"
+        attention_level = "中"
+
+        if has_sensitive_keyword == 1:
+            explanation = (
+                "網址包含 login、verify、account "
+                "等敏感字詞，"
+                "但目前整體判斷仍屬正常。\n"
+                "請確認網址網域與登入目的。"
+            )
+        else:
+            explanation = (
+                "目前判斷為正常網址，"
+                "但部分網址特徵需要留意。\n"
+                "請確認網站來源與內容。"
+            )
+
+    else:
+        attention_icon = "🟢"
+        attention_level = "低"
+        explanation = (
+            "目前未發現明顯高風險網址特徵。"
+        )
+
+    if has_ip == 1:
+        attention_icon = "🟡"
+        attention_level = "中"
+        explanation = (
+            "網址使用 IP 位址，"
+            "雖然模型目前判斷為正常，"
+            "仍建議確認來源。"
+        )
+
+    if suspicious_tld == 1:
+        attention_icon = "🟡"
+        attention_level = "中"
+        explanation = (
+            "網址使用較高風險的頂級網域，"
+            "請進一步確認網站來源。"
+        )
+
+    reply = [
+        "🔍 網址分析結果",
+        "",
+        "🌐 網址：",
+        result["normalized_url"],
+        "",
+        "📌 判斷：",
+        "✅ 正常網址",
+        "",
+        "👀 注意程度：",
+        f"{attention_icon} {attention_level}",
+        "",
+        "📖 說明：",
+        explanation,
+        "",
+        "──────────────────",
+        "⚠️ AI 分析結果僅供參考，",
+        "請勿僅依分析結果決定是否輸入帳號、密碼或付款資訊。",
+    ]
+
+    return "\n".join(reply)
+
+
+def build_phishing_url_reply(
+    result: dict,
+) -> str:
+    """
+    釣魚網址：
+    顯示風險分數與原因。
+    """
+
+    risk_score = float(
+        result.get(
+            "final_risk_score",
+            0.0,
+        )
+    )
+
+    reasons = result.get(
+        "reasons",
+        [],
+    )
+
+    reply = [
+        "🔍 網址分析結果",
+        "",
+        "🌐 網址：",
+        result["normalized_url"],
+        "",
+        "📌 判斷：",
+        "🚨 釣魚網址",
+        "",
+        "⚠️ 風險分數：",
+        f"{risk_score:.2f} / 100",
+        "",
+        "📖 判斷原因：",
+    ]
+
+    if reasons:
+        for reason in reasons:
+            reply.append(
+                f"• {reason}"
+            )
+    else:
+        reply.append(
+            "• 依網址字元、TF-IDF 與結構特徵綜合判斷"
+        )
+
+    reply.extend(
+        [
+            "",
+            "🚨 安全建議：",
+            "• 不要輸入帳號或密碼",
+            "• 不要提供信用卡或驗證碼",
+            "• 不要下載任何不明檔案",
+            "• 建議立即關閉該網頁",
+            "",
+            "──────────────────",
+            "⚠️ AI 分析結果僅供參考，",
+            "請勿僅依分析結果決定是否輸入帳號、密碼或付款資訊。",
+        ]
+    )
+
+    return "\n".join(reply)
+
+
+def build_short_url_reply(
+    result: dict,
+) -> str:
+    """
+    短網址：
+    不直接說一定是釣魚，
+    提醒使用者需展開目的網址。
+    """
+
+    reply = [
+        "🔍 網址分析結果",
+        "",
+        "🌐 網址：",
+        result["normalized_url"],
+        "",
+        "📌 判斷：",
+        "⚠️ 短網址，需進一步檢查",
+        "",
+        "📖 說明：",
+        "短網址會隱藏真正目的地，",
+        "目前無法只根據縮短後的網址確認最終網站是否安全。",
+        "",
+        "⚠️ 安全建議：",
+        "• 請先展開短網址後再檢查",
+        "• 不要直接登入或付款",
+        "• 不要下載不明檔案",
+        "",
+        "──────────────────",
+        "⚠️ AI 分析結果僅供參考，",
+        "請勿僅依分析結果決定是否輸入帳號、密碼或付款資訊。",
+    ]
+
+    return "\n".join(reply)
 
 
 def predict_phishing_url(
@@ -178,99 +385,41 @@ def predict_phishing_url(
         url
     )
 
-    risk_score = result.get(
-        "final_risk_score"
+    result_type = result.get(
+        "result",
+        "",
     )
 
-    if risk_score is None:
-        risk_score = 0.0
-
-    risk_level = get_risk_level(
-        float(risk_score)
-    )
-
-    reply: list[str] = []
-
-    reply.append("🔍 網址分析結果")
-    reply.append("")
-
-    reply.append("🌐 網址：")
-    reply.append(
-        result["normalized_url"]
-    )
-    reply.append("")
-
-    reply.append(
-        f"📌 判斷：{result['result']}"
-    )
-
-    reply.append(
-        f"⚠️ 風險分數："
-        f"{result['final_risk_score']}/100"
-    )
-
-    reply.append(
-        f"📊 風險等級：{risk_level}"
-    )
-
-    reply.append("")
-
-    reply.append("📖 判斷原因：")
-
-    reasons = result.get(
-        "reasons",
-        [],
-    )
-
-    if reasons:
-        for reason in reasons:
-            reply.append(
-                f"• {reason}"
-            )
-    else:
-        reply.append(
-            "• 依網址字元與結構特徵綜合判斷"
+    if result_type == "正常網址":
+        reply_text = build_normal_url_reply(
+            result
         )
 
-    reply.append("")
-
-    if result["result"] == "釣魚網址":
-        reply.append("🚨 安全建議：")
-        reply.append("• 不要輸入帳號或密碼")
-        reply.append("• 不要提供信用卡或驗證碼")
-        reply.append("• 不要下載任何不明檔案")
-        reply.append("• 建議立即關閉網頁")
-
-    elif result["result"] == "短網址，需進一步檢查":
-        reply.append("⚠️ 安全建議：")
-        reply.append("• 短網址會隱藏真正目的地")
-        reply.append("• 請先展開網址後再檢查")
-        reply.append("• 不要直接登入或付款")
+    elif result_type == "短網址，需進一步檢查":
+        reply_text = build_short_url_reply(
+            result
+        )
 
     else:
-        reply.append("✅ 安全提醒：")
-        reply.append(
-            "• 此結果僅依網址特徵判斷"
-        )
-        reply.append(
-            "• 仍請確認網站內容與來源"
+        reply_text = build_phishing_url_reply(
+            result
         )
 
     logger.info(
         "網址分析完成："
-        "result=%s, risk_score=%s, elapsed=%.2fs",
-        result.get("result"),
-        result.get("final_risk_score"),
+        "result=%s, score=%s, elapsed=%.2fs",
+        result_type,
+        result.get(
+            "final_risk_score"
+        ),
         time.time() - start_time,
     )
 
-    return "\n".join(
-        reply
-    )
+    return reply_text
 
 
 # =========================================================
-# 5. Hugging Face BERT V3
+# 6. Hugging Face BERT V3
 # =========================================================
 
 def _call_huggingface(
@@ -346,7 +495,7 @@ def predict_with_huggingface(
 
 
 # =========================================================
-# 6. 一般文字驗證
+# 7. 一般文字驗證
 # =========================================================
 
 def validate_user_text(
@@ -363,8 +512,7 @@ def validate_user_text(
 
     if len(text) < MIN_TEXT_LENGTH:
         return (
-            "⚠️ 輸入內容過短，"
-            "可能影響 AI 判斷準確度。\n\n"
+            "⚠️ 輸入內容過短，可能影響 AI 判斷準確度。\n\n"
             f"請貼上較完整的訊息內容，"
             f"建議至少 {MIN_TEXT_LENGTH} 個字。"
         )
@@ -380,7 +528,7 @@ def validate_user_text(
 
 
 # =========================================================
-# 7. Flask Routes
+# 8. Flask Routes
 # =========================================================
 
 @app.route(
@@ -399,13 +547,11 @@ def home():
         "url_model":
             "LightGBM V4.2",
         "url_features":
-            "26 structural + "
-            "3000 character TF-IDF",
+            "26 structural + 3000 character TF-IDF",
         "url_threshold":
             0.538741,
         "url_explainability":
-            "human-readable structural "
-            "feature explanation",
+            "human-readable URL feature explanation",
         "hf_space":
             HF_SPACE_URL,
     }, 200
@@ -460,7 +606,7 @@ def callback():
 
 
 # =========================================================
-# 8. LINE 文字訊息處理
+# 9. LINE 文字訊息處理
 # =========================================================
 
 @handler.add(
@@ -505,8 +651,7 @@ def handle_text_message(
 
             reply_text = (
                 "⚠️ 網址目前無法完成分析。\n\n"
-                "請確認網址格式，"
-                "或稍後再試一次。"
+                "請確認網址格式，或稍後再試一次。"
             )
 
     else:
@@ -548,8 +693,7 @@ def handle_text_message(
                 reply_text = (
                     "⚠️ 文字模型目前正在啟動、"
                     "更新或忙碌中。\n\n"
-                    "請稍候約 30 秒後"
-                    "重新傳送一次。"
+                    "請稍候約 30 秒後重新傳送一次。"
                 )
 
     try:
@@ -589,14 +733,12 @@ def handle_text_message(
             in error_text.lower()
         ):
             logger.warning(
-                "LINE reply token "
-                "已失效或已使用"
+                "LINE reply token 已失效或已使用"
             )
 
         else:
             logger.exception(
-                "LINE Messaging API "
-                "回覆失敗：%s",
+                "LINE Messaging API 回覆失敗：%s",
                 error,
             )
 
@@ -607,7 +749,7 @@ def handle_text_message(
 
 
 # =========================================================
-# 9. 本機 / Render 執行
+# 10. 本機 / Render 執行
 # =========================================================
 
 if __name__ == "__main__":
