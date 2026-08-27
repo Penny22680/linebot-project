@@ -1,4 +1,5 @@
 Flask
+gunicorn
 gradio_client
 line-bot-sdk
 lightgbm
@@ -7,4 +8,3 @@ scipy
 scikit-learn
 joblib
 tldextract
-gunicorn
