@@ -59,6 +59,8 @@ class FusionEngine:
         from transformers import AutoModelForImageClassification
         import pytesseract
 
+        from model_store import ensure_model_files
+        ensure_model_files()
         if not (MODEL_PATH / 'model.safetensors').is_file() or not (MODEL_PATH / 'config.json').is_file():
             raise FileNotFoundError(f'缺少 Mac 上訓練好的 DeiT 權重：{MODEL_PATH}')
         if not OCR_MODEL_PATH.is_file():
