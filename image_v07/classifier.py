@@ -6,9 +6,12 @@ OCR-only fallback: if OCR missing, use visual score but send to manual review.
 from __future__ import annotations
 
 import io
+import logging
 import os
 import threading
 from pathlib import Path
+
+from ocr_pipeline import extract_text
 
 BASE = Path(__file__).resolve().parent
 MODEL_PATH = BASE / 'models' / 'deit_best_model'
@@ -102,30 +105,38 @@ class FusionEngine:
             logits = self.model(pixel_values=pixel_values).logits.float()
             visual = float(torch.softmax(logits, dim=-1)[0, 1].cpu().item())
 
-        ocr_status = 'ok'
+        ocr_status = 'unavailable'
+        ocr_method = 'none'
+        ocr_char_count = 0
+        ocr_confidence = None
         ocr_score = None
         try:
-            ocr_im = im.copy()
-            ocr_im.thumbnail((1100, 1100), Image.Resampling.BILINEAR)
-            text = pytesseract.image_to_string(
-                ocr_im, lang='chi_tra+eng', config='--psm 6', timeout=6
-            ).replace('\x00', ' ')
-            if not text.strip():
-                ocr_status = 'empty'
-            else:
-                ocr_score = float(self.ocr_model.predict_proba([text])[0, 1])
-        except Exception:
-            # No OCR text or OCR engine error must not be interpreted as safe.
+            extraction = extract_text(im)
+            ocr_status = extraction.status
+            ocr_method = extraction.method
+            ocr_char_count = extraction.char_count
+            ocr_confidence = extraction.confidence
+            if extraction.status == 'ok':
+                ocr_score = float(self.ocr_model.predict_proba([extraction.text])[0, 1])
+        except Exception as exc:
+            # Fail closed: never treat OCR errors as evidence that an image is safe.
+            logging.getLogger('scam-v07-ocr').warning(
+                'OCR extraction/scoring failed: %s', type(exc).__name__
+            )
             ocr_status = 'unavailable'
+            ocr_score = None
         fused = combine_scores(visual, ocr_score)
         final = triage(visual, ocr_score, fused)
         return {
-            'version': 'V0.7 DeiT + OCR (research beta)',
+            'version': 'V0.8.1 DeiT + OCR (research beta)',
             'label': final,
             'binary_label': '疑似詐騙' if fused >= BINARY_THRESHOLD else '未達二元門檻',
             'visual_model_score': round(visual, 4),
             'ocr_text_model_score': round(ocr_score, 4) if ocr_score is not None else None,
             'fusion_score': round(fused, 4),
             'ocr_status': ocr_status,
+            'ocr_method': ocr_method,
+            'ocr_char_count': ocr_char_count,
+            'ocr_confidence': round(ocr_confidence, 1) if ocr_confidence is not None else None,
             'warning': '模型分數未校準，不是詐騙機率；無法證明圖片安全。'
         }

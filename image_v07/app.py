@@ -102,11 +102,21 @@ def download_image(message_id: str) -> bytes:
         return b''.join(chunks)
 
 
+def format_ocr_status(status: str) -> str:
+    """Avoid implying OCR accuracy and keep user images out of the reply."""
+    return {
+        'ok': '已擷取可用文字（仍可能有錯字）',
+        'empty': '未偵測到可用文字，請人工確認',
+        'low_quality': '文字品質不足，請人工確認',
+        'unavailable': '文字擷取暫時失敗，請稍後重試',
+    }.get(status, '無法確認文字品質，請人工檢查')
+
+
 def format_result(outcome: dict) -> str:
     return (
-        '圖片辨識｜V0.7 測試版\n'
+        '圖片辨識｜V0.8.1 測試版\n'
         f"結果：{outcome['label']}\n"
-        f"文字擷取：{'成功' if outcome['ocr_status'] == 'ok' else '無法完整擷取，請人工確認'}\n"
+        f"文字擷取：{format_ocr_status(outcome.get('ocr_status', 'unavailable'))}\n"
         '提醒：此為研究模型，不能保證辨識正確；不要只憑此結果匯款、提供密碼或個資，'
         '請使用官方網站或客服獨立查證。'
     )
@@ -151,7 +161,7 @@ def health():
 def ready():
     try:
         engine = get_engine()
-        return jsonify(status='ready', model='V0.7 DeiT + OCR', device=str(engine.device))
+        return jsonify(status='ready', model='V0.8.1 DeiT + OCR', device=str(engine.device))
     except Exception:
         log.exception('readiness failed')
         return jsonify(status='unavailable', message='模型或 OCR 尚未就緒'), 503
