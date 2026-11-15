@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import urllib.request
 import os
 import re
 import time
@@ -528,6 +530,48 @@ def validate_user_text(
 
 
 # =========================================================
+# Optional image-only relay (disabled unless explicitly enabled)
+# =========================================================
+
+IMAGE_RELAY_ENABLED = os.getenv('IMAGE_RELAY_ENABLED', '0') == '1'
+IMAGE_RELAY_TARGET = 'https://linebot-image-v07-test.onrender.com/callback'
+_IMAGE_RELAY_POOL = ThreadPoolExecutor(max_workers=2)
+
+
+def _contains_image_event(body: str) -> bool:
+    try:
+        payload = json.loads(body)
+        events = payload.get('events', []) if isinstance(payload, dict) else []
+        return isinstance(events, list) and any(
+            isinstance(event, dict)
+            and event.get('type') == 'message'
+            and isinstance(event.get('message'), dict)
+            and event['message'].get('type') == 'image'
+            for event in events
+        )
+    except (ValueError, TypeError):
+        return False
+
+
+def _relay_image_event(raw_body: bytes, signature: str) -> None:
+    # Forward the ORIGINAL LINE-signed bytes, not re-encoded/serialized JSON.
+    req = urllib.request.Request(
+        IMAGE_RELAY_TARGET,
+        data=raw_body,
+        headers={
+            'Content-Type': 'application/json',
+            'X-Line-Signature': signature,
+        },
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=90) as response:
+            logger.info('Image relay HTTP %s', response.status)
+    except Exception:
+        logger.exception('Image relay failed; existing text/URL flow unaffected')
+
+
+# =========================================================
 # 8. Flask Routes
 # =========================================================
 
@@ -601,6 +645,18 @@ def callback():
             "處理 LINE Webhook 時發生錯誤"
         )
         abort(500)
+
+    # Signature has already been validated by handler.handle().
+    # Relay ONLY image events; original text and URL handlers are unchanged.
+    if IMAGE_RELAY_ENABLED and _contains_image_event(body):
+        try:
+            _IMAGE_RELAY_POOL.submit(
+                _relay_image_event,
+                request.get_data(cache=True),
+                signature,
+            )
+        except Exception:
+            logger.exception('Unable to queue image relay')
 
     return "OK", 200
 
