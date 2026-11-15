@@ -14,12 +14,12 @@ from PIL import Image, ImageFilter, ImageOps
 log = logging.getLogger('scam-v07-ocr')
 
 # Designed for the existing Render free instance; at most two Tesseract passes.
-MAX_OCR_EDGE = 1600
+MAX_OCR_EDGE = 1100
 MIN_OCR_CHARS = 6
 MIN_OCR_CONFIDENCE = 30.0
 RETRY_IF_CONFIDENCE_BELOW = 55.0
 RETRY_IF_CHARS_BELOW = 24
-TESSERACT_TIMEOUT_PER_PASS = 6
+TESSERACT_TIMEOUT_PER_PASS = 15
 
 
 @dataclass(frozen=True)
@@ -111,6 +111,9 @@ def extract_text(image: Image.Image) -> OCRResult:
         except Exception as exc:
             # Do not print OCR text or uploaded image information.
             errors += 1
+            if type(exc) is RuntimeError and str(exc) == 'Tesseract process timeout':
+                log.warning('OCR attempt psm=%s timed out after %ss', psm, TESSERACT_TIMEOUT_PER_PASS)
+                break
             log.warning('OCR attempt psm=%s failed: %s', psm, type(exc).__name__)
 
     if not candidates:
