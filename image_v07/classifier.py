@@ -12,6 +12,7 @@ import threading
 from pathlib import Path
 
 from ocr_pipeline import extract_text
+from evidence_rules import find_text_clues
 
 BASE = Path(__file__).resolve().parent
 MODEL_PATH = BASE / 'models' / 'deit_best_model'
@@ -110,6 +111,7 @@ class FusionEngine:
         ocr_char_count = 0
         ocr_confidence = None
         ocr_score = None
+        text_clues = []
         try:
             extraction = extract_text(im)
             ocr_status = extraction.status
@@ -118,6 +120,7 @@ class FusionEngine:
             ocr_confidence = extraction.confidence
             if extraction.status == 'ok':
                 ocr_score = float(self.ocr_model.predict_proba([extraction.text])[0, 1])
+                text_clues = find_text_clues(extraction.text)
         except Exception as exc:
             # Fail closed: never treat OCR errors as evidence that an image is safe.
             logging.getLogger('scam-v07-ocr').warning(
@@ -125,16 +128,18 @@ class FusionEngine:
             )
             ocr_status = 'unavailable'
             ocr_score = None
+            text_clues = []
         fused = combine_scores(visual, ocr_score)
         final = triage(visual, ocr_score, fused)
         return {
-            'version': 'V0.8.1 DeiT + OCR (research beta)',
+            'version': 'V0.8.3 DeiT + OCR (research beta)',
             'label': final,
             'binary_label': '疑似詐騙' if fused >= BINARY_THRESHOLD else '未達二元門檻',
             'visual_model_score': round(visual, 4),
             'ocr_text_model_score': round(ocr_score, 4) if ocr_score is not None else None,
             'fusion_score': round(fused, 4),
             'ocr_status': ocr_status,
+            'text_clues': text_clues,
             'ocr_method': ocr_method,
             'ocr_char_count': ocr_char_count,
             'ocr_confidence': round(ocr_confidence, 1) if ocr_confidence is not None else None,

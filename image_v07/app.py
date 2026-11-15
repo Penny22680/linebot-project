@@ -113,13 +113,32 @@ def format_ocr_status(status: str) -> str:
 
 
 def format_result(outcome: dict) -> str:
-    return (
-        '圖片辨識｜V0.8.1 測試版\n'
-        f"結果：{outcome['label']}\n"
-        f"文字擷取：{format_ocr_status(outcome.get('ocr_status', 'unavailable'))}\n"
-        '提醒：此為研究模型，不能保證辨識正確；不要只憑此結果匯款、提供密碼或個資，'
-        '請使用官方網站或客服獨立查證。'
-    )
+    """User-facing explanation: rule-matched OCR phrases, not ML causal attribution."""
+    status = outcome.get('ocr_status', 'unavailable')
+    label = str(outcome.get('label', '需要人工確認'))
+    lines = [
+        '🔍 圖片詐騙辨識｜V0.8.3 測試版',
+        f'📌 判斷：{label}',
+        f'📝 文字擷取：{format_ocr_status(status)}',
+    ]
+    if status == 'ok':
+        clues = outcome.get('text_clues') or []
+        if clues:
+            lines.extend(['', '⚠️ OCR 辨識到的警示文字：'])
+            for clue in clues[:3]:
+                lines.append(f"•「{clue['quote']}」：{clue['explanation']}")
+        else:
+            lines.extend(['', '🔎 文字線索：未找到本版規則所涵蓋的特定警示語句；不代表安全。'])
+    else:
+        lines.extend(['', '🔎 文字線索：OCR 尚無可靠結果，無法提供具體文字線索。'])
+    lines.extend([
+        '',
+        '📖 說明：最終結果來自影像模型與可用的文字模型；上方警示語句是獨立的規則比對，'
+        '不是模型內部決策的因果解釋，不能只憑這些文字斷言是詐騙。',
+        '⚠️ 此為研究模型，分數並非真實詐騙機率。請勿只憑結果匯款或提供密碼、個資；'
+        '請透過官方網站或客服獨立查證。',
+    ])
+    return '\n'.join(lines)[:4900]
 
 
 def analyze_and_push(message_id: str, to: str, event_id: str):
@@ -161,7 +180,7 @@ def health():
 def ready():
     try:
         engine = get_engine()
-        return jsonify(status='ready', model='V0.8.1 DeiT + OCR', device=str(engine.device))
+        return jsonify(status='ready', model='V0.8.3 DeiT + OCR', device=str(engine.device))
     except Exception:
         log.exception('readiness failed')
         return jsonify(status='unavailable', message='模型或 OCR 尚未就緒'), 503
